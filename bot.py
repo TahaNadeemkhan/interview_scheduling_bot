@@ -32,7 +32,7 @@ GOOGLE_CALENDAR_SCOPES = ['https://www.googleapis.com/auth/calendar']
 RECRUITER_EMAIL = 'tahak6884@gmail.com' 
 DEFAULT_CALENDAR_ID = 'primary'
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/" 
-GEMINI_MODEL = "gemini-1.5-flash-latest" 
+GEMINI_MODEL = "gemini-2.0-flash" 
 
 # Google Calendar Setup
 def setup_calendar_api() -> Any:
@@ -82,7 +82,6 @@ def setup_calendar_api() -> Any:
             except Exception as e:
                 print(f"Error saving token to {TOKEN_PICKLE_FILE}: {e}")
 
-
     if creds and creds.valid:
         try:
             service = build('calendar', 'v3', credentials=creds)
@@ -122,7 +121,7 @@ def send_email(recipient_email: str, subject: str, body: str):
 def get_free_slots(calendar_id: str = DEFAULT_CALENDAR_ID, days_ahead: int = 14) -> List[Dict[str, str]]:
     """
     Get free time slots from the calendar for the upcoming specified number of days (default 14).
-    It only considers times between 9 AM and 5 PM in the calendar's timezone (approximated as UTC).
+    It only considers times between 9 AM to 5 PM in the calendar's timezone (approximated as UTC).
     Returns a list of available slots like [{'start': 'YYYY-MM-DDTHH:MM:SSZ', 'end': 'YYYY-MM-DDTHH:MM:SSZ'}, ...].
     """
     if not google_calendar_service:
@@ -134,6 +133,7 @@ def get_free_slots(calendar_id: str = DEFAULT_CALENDAR_ID, days_ahead: int = 14)
     time_max_dt = time_min_dt + timedelta(days=days_ahead)
     time_min = time_min_dt.isoformat()
     time_max = time_max_dt.isoformat()
+    print(f"Current UTC time: {now}")
 
     print(f"Checking calendar '{calendar_id}' for free slots between {time_min} and {time_max}")
 
@@ -146,6 +146,7 @@ def get_free_slots(calendar_id: str = DEFAULT_CALENDAR_ID, days_ahead: int = 14)
             orderBy='startTime'
         ).execute()
         events = events_result.get('items', [])
+        print(f"Calendar events: {events}")
     except HttpError as error:
         print(f"An error occurred fetching calendar events: {error}")
         return {"error": f"Could not fetch calendar events: {error}"}
@@ -171,13 +172,10 @@ def get_free_slots(calendar_id: str = DEFAULT_CALENDAR_ID, days_ahead: int = 14)
             if start_date_str:
                 try:
                     start_dt_naive = datetime.strptime(start_date_str, '%Y-%m-%d')
-                    end_dt_naive = start_dt_naive 
+                    busy_start_utc = start_dt_naive.replace(hour=9, minute=0, second=0, tzinfo=timezone.utc)
+                    busy_end_utc = start_dt_naive.replace(hour=17, minute=0, second=0, tzinfo=timezone.utc)
 
-                    now = datetime.now(timezone.utc)
-                    busy_start_utc = datetime(now.year, start_dt_naive.month, start_dt_naive.day, 9, 0, 0, tzinfo=timezone.utc)
-                    busy_end_utc = datetime(now.year, end_dt_naive.month, end_dt_naive.day, 17, 0, 0, tzinfo=timezone.utc)
-
-                    if busy_start_utc < time_max_dt and busy_end_utc > time_min_dt:
+                    if busy_start_utc < time_max_dt or busy_end_utc > time_min_dt:
                         busy_slots.append({
                             'start': max(busy_start_utc, time_min_dt),
                             'end': min(busy_end_utc, time_max_dt)
@@ -236,14 +234,14 @@ def get_free_slots(calendar_id: str = DEFAULT_CALENDAR_ID, days_ahead: int = 14)
         if current_potential_start < current_day_end:
             free_slots.append({
                 'start': current_potential_start.isoformat().replace('+00:00', 'Z'),
-                'end': current_day_end.isoformat().replace('+00:00', 'Z') # Use clamped end time
+                'end': current_day_end.isoformat().replace('+00:00', 'Z') 
             })
 
         current_check_time = current_check_time.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-
-
+        print(f"Generated free slots: {free_slots}")
+        
     if not free_slots:
-        print("No free slots found in the next 14 days between 9 AM and 5 PM UTC.")
+        print("No free slots found in the next 14 days between 9 AM to 5 PM UTC.")
         return [] 
 
     print(f"Found {len(free_slots)} free slots.")
@@ -256,7 +254,7 @@ def get_free_slots(calendar_id: str = DEFAULT_CALENDAR_ID, days_ahead: int = 14)
 def book_interview(start_time: str, end_time: str, candidate_email: str, calendar_id: str = DEFAULT_CALENDAR_ID) -> str:
     """
     Book an interview slot on the calendar.
-    Requires start_time and end_time in ISO format (e.g., '2025-04-15T10:00:00Z')
+    Requires start_time and end_time in ISO format (e.g., '2026-04-15T10:00:00Z')
     and the candidate's email address.
     """
     if not google_calendar_service:
@@ -295,7 +293,7 @@ def book_interview(start_time: str, end_time: str, candidate_email: str, calenda
         created_event = google_calendar_service.events().insert(
             calendarId=calendar_id,
             body=event,
-            sendNotifications=True # Send invites to attendees
+            sendNotifications=True
             ).execute()
         print(f"Interview booked successfully! Event ID: {created_event.get('id')}")
 
@@ -329,7 +327,6 @@ def book_interview(start_time: str, end_time: str, candidate_email: str, calenda
         """
         send_email(RECRUITER_EMAIL, subject, body_recruiter)
 
-        # Provide more specific success message for the user/LLM
         return f"Success! Interview booked for {candidate_email} starting {start_time} and ending {end_time}."
     except HttpError as error:
         error_content = "Unknown error"
@@ -365,38 +362,36 @@ config = RunConfig(
     tracing_disabled=True 
 )
 
-# Set up Agent 
+# Set up Agent  
 agent = Agent(
     name="Interview Scheduling Bot",
     instructions='''You are an expert interview scheduling bot using Google Calendar. Your goal is to help candidates find and book an interview slot efficiently and naturally.
-1.  Greet & Offer: Start by greeting the candidate and asking if they want to find an interview slot.
-2.  Fetch Slots: If they agree, use the 'get_free_slots' tool.
+1. Greet & Offer: Start by greeting the candidate and asking if they want to find an interview slot.
+2. Fetch Slots: If they agree, use the 'get_free_slots' tool.
     - IMPORTANT: When calling 'get_free_slots', rely on the default parameters. Do not provide a value for `calendar_id`; let it use the default ('primary').
-3.  Present Slots & Ask Naturally:
-    - If 'get_free_slots' returns a list of available slots (which are in preciseYYYY-MM-DDTHH:MM:SSZ UTC format):
-        - Present these slots clearly to the candidate. You can make them more readable (e.g., "April 5th, 10:00 AM - 11:00 AM UTC"). Crucially, always mention that the times are in UTC.
+3. Present Slots & Ask Naturally:
+    - If 'get_free_slots' returns a list of available slots (which are in precise YYYY-MM-DDTHH:MM:SSZ UTC format):
+        - Present these slots clearly to the candidate. You can make them more readable (e.g., "April 5th, 9:00 AM - 5:00 PM UTC"). Crucially, always mention that the times are in UTC.
         - Ask the candidate to choose their preferred slot using natural language (e.g., "Which of these time slots works best for you?", "Please tell me the date and time you'd like from the options above.").
     - If 'get_free_slots' returns an empty list `[]` or an object containing an 'error' key:
         - Inform the candidate that no slots are available or that there was a problem checking the calendar (mention the error if provided in the response). Suggest trying again later or contacting support. Do not display the raw error object. Do not proceed to booking steps.
-4.  Understand & Match User Choice:
-    - Parse the candidate's natural language response (e.g., "tomorrow at 10", "April 5th morning slot", "the 2 PM slot on Friday").
-    - CRITICAL: Carefully compare the candidate's stated preference against the list of available slots you presented in the previous step. Find the specific available slot object that matches their request.
-    - If their request is ambiguous or doesn't clearly match any *single* available slot from the list, ask for clarification (e.g., "Sorry, could you specify which 10 AM slot you meant?" or "I don't see a slot matching that time, could you pick directly from the list?").
-    - If their request matches a time *outside* the offered slots (e.g., they ask for 8 PM when slots are 9-5), politely remind them of the available time range and ask them to choose from the list.
-5.  Extract Exact Times & Get Email:
-    - Once a clear match is identified between the user's natural request and a specific available slot from the list:
-        - Extract the exact `start_time` and `end_time` strings (inYYYY-MM-DDTHH:MM:SSZ format) directly from the matched available slot data. Do NOT try to recalculate or reformat the time yourself.
-        - If you don't already have it, ask for and obtain the candidate's email address. You need both the matched times and the email before booking.
-6.  Book Interview:
+4. Understand & Match User Choice:
+    - Parse the candidate's natural language response (e.g., "April 9th at 10 AM").
+    - CRITICAL: Match the request to one of the available slots provided by `get_free_slots`. The slots are given in YYYY-MM-DDTHH:MM:SSZ format (e.g., '2025-04-09T09:00:00Z' to '2025-04-09T17:00:00Z'). Assume the year is 2025 for all user inputs since the slots are for 2025. Check if the user's requested date matches the slot's date, and if the requested time falls BETWEEN the slot's start and end times (e.g., for a slot from 9:00 AM to 5:00 PM UTC, any time like 3:00 PM should be accepted).
+    - If the request doesn’t match any available slot (e.g., wrong date or time outside the slot range), ask for clarification with: "Sorry, that time doesn’t match any available slots. Please pick one from the list I provided."
+5. Extract Exact Times & Get Email:
+    - Once a slot is matched, ask the candidate to confirm the exact start and end time within the matched slot (e.g., for a slot from 9:00 AM to 5:00 PM, they might say "from 3:00 PM to 4:00 PM"). Ensure the start and end times they provide are within the slot's range.
+    - Also, ask for their email address if not already provided (e.g., "Please provide your email address to book the slot.").
+6. Book Interview:
     - Use the 'book_interview' tool.
-    - Provide the exact `start_time` and `end_time` strings you extracted from the matched slot data in the previous step.
+    - Provide the exact `start_time` and `end_time` strings based on the user's confirmed times (e.g., '2025-04-09T15:00:00Z' to '2025-04-09T16:00:00Z'). Ensure the year is set to 2025 in the ISO format.
     - Provide the `candidate_email`.
     - Use the default `calendar_id` ('primary').
-7.  Confirm/Report Result:
+7. Confirm/Report Result:
     - Based on the response string from 'book_interview':
         - If it indicates success (e.g., starts with "Success!"), confirm the booking details (candidate email, date, start time, end time, mentioning TZ is UTC) to the candidate.
         - If it indicates failure (e.g., starts with "Failed"), inform the candidate about the failure and the reason provided. Suggest they choose a different slot if applicable.
-8.  Handle Off-Topic: Stick strictly to interview scheduling. Politely decline any off-topic requests.
+8. Handle Off-Topic: Stick strictly to interview scheduling. Politely decline any off-topic requests.
 ''',
     tools=[get_free_slots, book_interview],
     model=model

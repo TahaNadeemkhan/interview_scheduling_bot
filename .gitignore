@@ -7,10 +7,10 @@ wheels/
 *.egg-info
 
 # Virtual environments
+.env
 .venv
 auth.py
 credentials.json
 token.json
 hello_agent.py
 token.pickle
-.env
